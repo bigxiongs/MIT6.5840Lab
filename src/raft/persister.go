@@ -9,8 +9,15 @@ package raft
 // test with the original before submitting.
 //
 
-import "sync"
+import (
+	"bytes"
+	"sync"
 
+	"6.5840/labgob"
+)
+
+// raftstate保存的东西：rf.currentTerm，rf.votedFor，rf.logs
+// snapshot保存的东西：lastSnapshotIndex，以及过去所有的cmd
 type Persister struct {
 	mu        sync.Mutex
 	raftstate []byte
@@ -36,6 +43,12 @@ func (ps *Persister) Copy() *Persister {
 	return np
 }
 
+func (ps *Persister) SaveRaftState(state []byte) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.raftstate = clone(state)
+}
+
 func (ps *Persister) ReadRaftState() []byte {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -50,10 +63,10 @@ func (ps *Persister) RaftStateSize() int {
 
 // Save both Raft state and K/V snapshot as a single atomic action,
 // to help avoid them getting out of sync.
-func (ps *Persister) Save(raftstate []byte, snapshot []byte) {
+func (ps *Persister) SaveStateAndSnapshot(state []byte, snapshot []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	ps.raftstate = clone(raftstate)
+	ps.raftstate = clone(state)
 	ps.snapshot = clone(snapshot)
 }
 
@@ -67,4 +80,40 @@ func (ps *Persister) SnapshotSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return len(ps.snapshot)
+}
+
+func (rf *Raft) WritePersist() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	e.Encode(rf.lastSnapShotIndex)
+	// e.Encode(rf.lastApplied)
+	// e.Encode(rf.commitIndex)
+	data := w.Bytes()
+	return data
+}
+
+func (rf *Raft) readPersist(raftState []byte) {
+	if raftState == nil || len(raftState) < 1 { // bootstrap without any state?
+		return
+	}
+	r := bytes.NewBuffer(raftState)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []Log
+	var lastSnapshotIndex int
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil ||
+		d.Decode(&lastSnapshotIndex) != nil {
+		println("read Persist.raftstate error")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.logs = logs
+		rf.lastSnapShotIndex = lastSnapshotIndex
+	}
 }
