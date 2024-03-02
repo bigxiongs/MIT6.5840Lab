@@ -8,24 +8,20 @@ package raft
 // test with the original before submitting.
 //
 
-import (
-	"bytes"
-	"log"
-	"math/rand"
-	"runtime"
-	"sync"
-	"sync/atomic"
-	"testing"
-
-	"6.5840/labgob"
-	"6.5840/labrpc"
-
-	crand "crypto/rand"
-	"encoding/base64"
-	"fmt"
-	"math/big"
-	"time"
-)
+import "6.5840/labgob"
+import "6.5840/labrpc"
+import "bytes"
+import "log"
+import "sync"
+import "sync/atomic"
+import "testing"
+import "runtime"
+import "math/rand"
+import crand "crypto/rand"
+import "math/big"
+import "encoding/base64"
+import "time"
+import "fmt"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -137,7 +133,7 @@ func (cfg *config) crash1(i int) {
 		raftlog := cfg.saved[i].ReadRaftState()
 		snapshot := cfg.saved[i].ReadSnapshot()
 		cfg.saved[i] = &Persister{}
-		cfg.saved[i].SaveStateAndSnapshot(raftlog, snapshot)
+		cfg.saved[i].Save(raftlog, snapshot)
 	}
 }
 
@@ -207,7 +203,6 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 		cfg.logs[i][j] = xlog[j]
 	}
 	cfg.lastApplied[i] = lastIncludedIndex
-	// fmt.Printf("after snapshot, peer %d cfg.lastApplied[i]: %d\n", i, cfg.lastApplied[i])
 	return ""
 }
 
@@ -224,15 +219,11 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 
 	for m := range applyCh {
 		err_msg := ""
-		// fmt.Printf("peer %d cfg.lastApplied[i]: %d\n", i, cfg.lastApplied[i])
 		if m.SnapshotValid {
-			if rf.CondInstallSnapshot(m.SnapshotTerm, m.SnapshotIndex, m.Snapshot) {
-				cfg.mu.Lock()
-				err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
-				cfg.mu.Unlock()
-			}
+			cfg.mu.Lock()
+			err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
+			cfg.mu.Unlock()
 		} else if m.CommandValid {
-			// fmt.Printf("peer %d service get command %d, cfg.lastApplied[i]: %d\n", i, m.CommandIndex, cfg.lastApplied[i])
 			if m.CommandIndex != cfg.lastApplied[i]+1 {
 				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
 			}
@@ -260,6 +251,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 					xlog = append(xlog, cfg.logs[i][j])
 				}
 				e.Encode(xlog)
+				log.Printf("N%v snapshots at index=%v", i, m.CommandIndex)
 				rf.Snapshot(m.CommandIndex, w.Bytes())
 			}
 		} else {
@@ -274,14 +266,11 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	}
 }
 
-//
 // start or re-start a Raft.
 // if one already exists, "kill" it first.
 // allocate new outgoing port file names, and a new
 // state persister, to isolate previous instance of
 // this server. since we cannot really kill it.
-//
-
 func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 	cfg.crash1(i)
 
@@ -325,7 +314,7 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 
 	cfg.mu.Unlock()
 
-	applyCh := make(chan ApplyMsg, 100)
+	applyCh := make(chan ApplyMsg)
 
 	rf := Make(ends, i, cfg.saved[i], applyCh)
 
@@ -442,9 +431,6 @@ func (cfg *config) checkOneLeader() int {
 
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
-			if _, leader := cfg.rafts[i].GetState(); leader {
-				// fmt.Printf("#####check: peer %d is leader now!#####\n", i)
-			}
 			if cfg.connected[i] {
 				if term, leader := cfg.rafts[i].GetState(); leader {
 					leaders[term] = append(leaders[term], i)
@@ -568,15 +554,12 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
-	// fmt.Printf("start one\n")
 	t0 := time.Now()
 	starts := 0
-	// 被困在这个for循环里
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
 		index := -1
 		for si := 0; si < cfg.n; si++ {
-			// println("in for")
 			starts = (starts + 1) % cfg.n
 			var rf *Raft
 			cfg.mu.Lock()
@@ -587,12 +570,12 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
-					index = index1 // index是全局index
+					index = index1
 					break
 				}
 			}
 		}
-		// println("out of for")
+
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
@@ -602,7 +585,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
-						// fmt.Printf("start one ended\n")
 						// and it was the command we submitted.
 						return index
 					}
@@ -619,7 +601,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	if cfg.checkFinished() == false {
 		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	}
-	// fmt.Printf("start one ended\n")
 	return -1
 }
 
