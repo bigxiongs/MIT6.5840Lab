@@ -3,18 +3,16 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	"time"
 
 	"6.5840/labrpc"
 )
 
-const retryInterval = 100 * time.Millisecond
-
 type Clerk struct {
-	servers  []*labrpc.ClientEnd
-	clerkId  int64 // the unique id of this clerk.
-	nextOpId int   // the next op id to allocate for an op.
-	leader   int   // known leader, defaults to the servers[0].
+	servers []*labrpc.ClientEnd
+	// You will have to modify this struct.
+	LeaderId int
+	Seq      int
+	ClientId int64
 }
 
 func nrand() int64 {
@@ -27,62 +25,68 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.clerkId = nrand()
-	ck.nextOpId = 0
-	ck.leader = 0
+	// You'll have to add code here.
+	ck.ClientId = nrand()
+	ck.Seq = 1
 	return ck
 }
 
-func (ck *Clerk) allocateOpId() int {
-	opId := ck.nextOpId
-	ck.nextOpId++
-	return opId
-}
-
+// fetch the current value for a key.
+// returns "" if the key does not exist.
+// keeps trying forever in the face of all other errors.
+//
+// you can send an RPC with code like this:
+// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+//
+// the types of args and reply (including whether they are pointers)
+// must match the declared types of the RPC handler function's
+// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	args := &GetArgs{ClerkId: ck.clerkId, OpId: ck.allocateOpId(), Key: key}
-
-	for {
-		for i := 0; i < len(ck.servers); i++ {
-			// try to send to the known first.
-			serverId := (ck.leader + i) % len(ck.servers)
-
-			var reply GetReply
-			if ok := ck.servers[serverId].Call("KVServer.Get", args, &reply); ok {
-				if reply.Err == OK {
-					ck.leader = serverId
-					return reply.Value
-				}
-			}
-		}
-		time.Sleep(retryInterval)
-	}
+	return ck.CmdRequst(&CommandArgs{Key: key, Value: "", Op: "Get"})
+	// You will have to modify this function.
 }
 
+// shared by Put and Append.
+//
+// you can send an RPC with code like this:
+// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+//
+// the types of args and reply (including whether they are pointers)
+// must match the declared types of the RPC handler function's
+// arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := &PutAppendArgs{ClerkId: ck.clerkId, OpId: ck.allocateOpId(), OpType: op, Key: key, Value: value}
+	// You will have to modify this function.
+	ck.CmdRequst(&CommandArgs{Key: key, Value: value, Op: op})
+}
 
+func (ck *Clerk) CmdRequst(args *CommandArgs) string {
+
+	args.ClientId = ck.ClientId
+	args.Seq = ck.Seq
+	LeaderId := ck.LeaderId
 	for {
-		for i := 0; i < len(ck.servers); i++ {
-			// try to send to the known first.
-			serverId := (ck.leader + i) % len(ck.servers)
-
-			var reply PutAppendReply
-			if ok := ck.servers[serverId].Call("KVServer.PutAppend", args, &reply); ok {
-				if reply.Err == OK {
-					ck.leader = serverId
-					return
-				}
+		reply := CmdReply{}
+		ok := ck.servers[LeaderId%len(ck.servers)].Call("KVServer.CommandReply", args, &reply)
+		if ok {
+			switch reply.Err {
+			case OK:
+				ck.LeaderId = LeaderId % len(ck.servers)
+				ck.Seq++
+				return reply.Value
+			case ErrNoKey:
+				ck.LeaderId = LeaderId % len(ck.servers)
+				ck.Seq++
+				return ""
 			}
 		}
-		time.Sleep(retryInterval)
+		LeaderId++
 	}
+
 }
 
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
-
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
 }
